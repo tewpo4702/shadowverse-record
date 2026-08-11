@@ -1,7 +1,6 @@
 {
   "name": "シャドバ戦績カウンター",
   "short_name": "シャドバ戦績",
-  "description": "シャドバの勝敗・デッキ・対面相性を記録する戦績アプリ",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#0b1020",
