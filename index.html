@@ -24,6 +24,8 @@
 .memo-box textarea{width:100%;box-sizing:border-box;background:#1b263d;border:1px solid #35435e;color:#f5f7fb;border-radius:11px;padding:12px;font:inherit}
 .memo-actions{display:flex;gap:8px;margin-top:10px}
 .memo-actions button{flex:1}
+</style><style>
+.history-toggle{width:100%;margin-top:10px;background:#25314a;color:#d9e1ef}
 </style></head>
 <body>
 <div class="wrap">
@@ -85,7 +87,10 @@
   <h2>🔥 直近の戦績</h2>
   <div class="stats" id="recentStats"></div>
 
-  <h2>🏆 連勝・連敗</h2>
+  <h2>📅 期間別戦績</h2><div class="stats" id="periodStats"></div>
+<h2>🕐 時間帯別勝率</h2><div class="card" id="timeStats"></div>
+<h2>🧩 負けの原因</h2><div class="card" id="lossCauseStats"></div>
+<h2>🏆 連勝・連敗</h2>
   <div class="stats" id="streakStats"></div>
 
   <h2>🧭 先攻・後攻</h2>
@@ -139,9 +144,9 @@ function addGame(result){
   const opp=document.getElementById('oppDeck').value;
   const turn=document.getElementById('turn').value;
   const memo=(document.getElementById('gameMemo')?.value||'').trim();
-  state.games.push({date:new Date().toISOString(),my,opp,turn,result,memo});
+  state.games.push({date:new Date().toISOString(),my,opp,turn,result,memo,cause:''});
   document.getElementById('gameMemo').value='';
-  save();render();
+  window._historyPage=0;save();render();
 }
 document.getElementById('winBtn').onclick=()=>addGame('W');
 document.getElementById('loseBtn').onclick=()=>addGame('L');
@@ -151,9 +156,9 @@ document.getElementById('addDeck').onclick=()=>{
   if(!state.decks.includes(v))state.decks.push(v);
   i.value='';save();fillSelects();
 };
-document.getElementById('undoBtn').onclick=()=>{if(state.games.length){state.games.pop();save();render();}};
+document.getElementById('undoBtn').onclick=()=>{if(state.games.length){state.games.pop();window._historyPage=0;save();render();}};
 document.getElementById('resetBtn').onclick=()=>{
-  if(confirm('全戦績を削除します。よろしいですか？')){state.games=[];save();render();}
+  if(confirm('全戦績を削除します。よろしいですか？')){state.games=[];window._historyPage=0;save();render();}
 };
 
 function pct(w,n){return n?Math.round(w/n*1000)/10:0;}
@@ -323,6 +328,36 @@ function renderDeckAnalysis(){
       rows.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.w}勝 ${x.l}敗</td><td class="right">${x.rate}%</td></tr>`).join('')+
       '</tbody></table>':'<div class="empty">まだ対戦データがありません。</div>'}`;
 }
+function renderPeriodStats(){
+  const el=document.getElementById('periodStats');if(!el)return;
+  const now=new Date(),y=now.getFullYear(),m=now.getMonth();
+  const sets=[['今月',state.games.filter(g=>{const d=new Date(g.date);return d.getFullYear()===y&&d.getMonth()===m;})],
+    ['直近7日',state.games.filter(g=>Date.now()-new Date(g.date).getTime()<=7*86400000)],
+    ['直近30日',state.games.filter(g=>Date.now()-new Date(g.date).getTime()<=30*86400000)]];
+  el.innerHTML=sets.map(([name,g])=>{const w=g.filter(x=>x.result==='W').length;return `<div class="stat"><div class="small">${name}</div><div class="num">${pct(w,g.length)}%</div><div class="small">${w}勝 ${g.length-w}敗</div></div>`}).join('');
+}
+function renderTimeStats(){
+  const el=document.getElementById('timeStats');if(!el)return;
+  const groups=[['朝 6-12',6,12],['昼 12-18',12,18],['夜 18-24',18,24],['深夜 0-6',0,6]];
+  el.innerHTML=groups.map(([name,a,b])=>{const g=state.games.filter(x=>{const h=new Date(x.date).getHours();return a<b?h>=a&&h<b:h>=a||h<b;});const w=g.filter(x=>x.result==='W').length;return `<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line)"><span>${name}</span><b>${pct(w,g.length)}% <span class="small">(${w}勝 ${g.length-w}敗)</span></b></div>`}).join('');
+}
+function renderLossCauses(){
+  const el=document.getElementById('lossCauseStats');if(!el)return;
+  const m={};state.games.filter(g=>g.result==='L'&&g.cause).forEach(g=>m[g.cause]=(m[g.cause]||0)+1);
+  const items=Object.entries(m).sort((a,b)=>b[1]-a[1]);
+  el.innerHTML=items.length?items.map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line)"><span>${esc(k)}</span><b>${v}回</b></div>`).join(''):'<div class="empty">負けの原因を記録するとここに表示されます。</div>';
+}
+function changeHistoryPage(page){window._historyPage=page;render();document.getElementById('tableWrap')?.scrollIntoView({behavior:'smooth',block:'start'});}
+function renderCompoundAnalysis(){
+  const el=document.getElementById('deckAnalysis');if(!el)return;
+  const deck=document.getElementById('analysisDeck').value,games=state.games.filter(g=>g.my===deck),m={};
+  games.forEach(g=>{const k=`${g.opp} / ${g.turn||'—'}`;if(!m[k])m[k]={w:0,n:0};m[k].n++;if(g.result==='W')m[k].w++;});
+  const rows=Object.entries(m).filter(([,v])=>v.n>=3).sort((a,b)=>b[1].n-a[1].n);
+  const old=el.querySelector('.compound-analysis');if(old)old.remove();
+  const div=document.createElement('div');div.className='compound-analysis';
+  div.innerHTML='<h3 style="font-size:14px;margin:16px 0 8px">🧠 相手×先後</h3>'+(rows.length?'<table class="table"><thead><tr><th>相手 / 先後</th><th>戦績</th><th class="right">勝率</th></tr></thead><tbody>'+rows.map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v.w}勝 ${v.n-v.w}敗</td><td class="right">${pct(v.w,v.n)}%</td></tr>`).join('')+'</tbody></table>':'<div class="empty">3戦以上のデータがありません。</div>');
+  el.appendChild(div);
+}
 function render(){
   fillSelects();fillAnalysisDeck();
   const w=state.games.filter(g=>g.result==='W').length,n=state.games.length;
@@ -334,8 +369,9 @@ function render(){
   drawWinLoss(document.getElementById('oppWinLoss'),state.games);
   drawTurn(document.getElementById('turnChart'),state.games);
   drawSession(document.getElementById('sessionChart'),state.games);
-  renderMatchups();renderDeckAnalysis();
+  renderMatchups();renderDeckAnalysis();renderCompoundAnalysis();
 
+  renderPeriodStats();renderTimeStats();renderLossCauses();
   const r10=recent(10),r20=recent(20),r50=recent(50);
   document.getElementById('recentStats').innerHTML=[['10戦',r10],['20戦',r20],['50戦',r50]].map(x=>`<div class="stat"><div class="small">直近${x[0]}</div><div class="num">${x[1].rate}%</div><div class="small">${x[1].w}勝 ${x[1].l}敗</div></div>`).join('');
   const st=streaks();
@@ -347,14 +383,20 @@ function render(){
   const tw=document.getElementById('tableWrap');
   if(!n){tw.className='empty';tw.innerHTML='まだ戦績がありません。';return;}
   tw.className='';
+  const pageSize=10;
+  const totalPages=Math.max(1,Math.ceil(n/pageSize));
+  const currentPage=window._historyPage||0;
+  const startIdx=currentPage*pageSize;
+  const pageGames=state.games.slice().reverse().slice(startIdx,startIdx+pageSize);
   tw.innerHTML='<table class="table"><thead><tr><th>#</th><th>自分</th><th>相手</th><th>先後</th><th>結果</th><th>メモ</th><th>日時</th></tr></thead><tbody>'+
-    state.games.slice().reverse().map((g,idx)=>{
-      const d=new Date(g.date);
-      return `<tr><td>${n-idx}</td><td>${esc(g.my)}</td><td>${esc(g.opp)}</td><td>${esc(g.turn||'—')}</td><td style="font-weight:800;color:${g.result==='W'?'#35d07f':'#ff5c6c'}">${g.result==='W'?'勝':'負'}</td><td>${g.memo?`<button class="memo-btn" onclick="openMemo(${state.games.indexOf(g)})">📝</button>`:'<span class="memo-empty">—</span>'}</td><td>${d.toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'})} ${d.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})}</td></tr>`;
+    pageGames.map((g,idx)=>{
+      const originalIndex=state.games.indexOf(g),d=new Date(g.date);
+      return `<tr><td>${n-startIdx-idx}</td><td>${esc(g.my)}</td><td>${esc(g.opp)}</td><td>${esc(g.turn||'—')}</td><td style="font-weight:800;color:${g.result==='W'?'#35d07f':'#ff5c6c'}">${g.result==='W'?'勝':'負'}</td><td>${g.memo?`<button class="memo-btn" onclick="openMemo(${originalIndex})">📝</button>`:'<span class="memo-empty">—</span>'}</td><td>${d.toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'})} ${d.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})}</td></tr>`;
     }).join('')+
-    '</tbody></table>';
+    '</tbody></table>'+
+    (totalPages>1?`<button class="history-toggle" onclick="changeHistoryPage(${currentPage+1<totalPages?currentPage+1:0})">${currentPage+1<totalPages?'▼ 過去の戦績を見る':'▲ 最新の戦績に戻る'}（${currentPage+1}/${totalPages}）</button>`:'');
 }
-document.getElementById('analysisDeck').addEventListener('change',renderDeckAnalysis);window.addEventListener('resize',render);render();
+document.getElementById('analysisDeck').addEventListener('change',()=>{renderDeckAnalysis();renderCompoundAnalysis();});window.addEventListener('resize',render);render();
 
 function downloadBackup(){
   const payload={app:"Shadowverse WB Record",version:2,exportedAt:new Date().toISOString(),data:state};
@@ -372,7 +414,7 @@ function restoreBackup(file){
       if(!confirm(`バックアップの${data.games.length}戦を復元します。現在の戦績は置き換わります。よろしいですか？`))return;
       state={decks:data.decks.length?data.decks:["不明"],games:data.games.map(g=>({
         date:g.date||new Date().toISOString(),my:g.my||"不明",opp:g.opp||"不明",
-        turn:g.turn||"—",result:g.result==="W"?"W":"L",memo:g.memo||""
+        turn:g.turn||"—",result:g.result==="W"?"W":"L",memo:g.memo||"",cause:g.cause||""
       }))};
       save();render();alert("復元しました！");
     }catch(e){alert("バックアップファイルを読み込めませんでした。");}
@@ -385,21 +427,23 @@ document.getElementById("restoreFile").addEventListener("change",e=>{
   if(e.target.files[0])restoreBackup(e.target.files[0]);e.target.value="";
 });
 if("serviceWorker" in navigator && location.protocol!=="file:"){
-  window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(()=>{}));
+  window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js?v=3").catch(()=>{}));
 }
 </script>
 <div id="memoModal" class="memo-modal"><div class="memo-box">
 <h3>📝 試合メモ</h3><div id="memoMeta" class="hint"></div>
 <textarea id="memoText" rows="7" placeholder="この試合で気づいたこと、ミス、相手の動きなど"></textarea>
+<div class="label" style="margin-top:10px">負けた原因（任意）</div>
+<select id="memoCause"><option value="">選択しない</option><option>マリガン</option><option>プレイミス</option><option>引きが悪い</option><option>相手が上手かった</option><option>不明</option></select>
 <div class="memo-actions"><button class="secondary" id="memoCancel">キャンセル</button><button id="memoSave">保存</button><button class="secondary" id="memoDelete">削除</button></div>
 </div></div>
 <script>
 let memoIndex=-1;
-function openMemo(i){memoIndex=i;const g=state.games[i];if(!g)return;document.getElementById("memoMeta").textContent=`${g.my} vs ${g.opp} / ${g.result==="W"?"勝ち":"負け"} / ${g.turn||"—"}`;document.getElementById("memoText").value=g.memo||"";document.getElementById("memoModal").classList.add("show")}
+function openMemo(i){memoIndex=i;const g=state.games[i];if(!g)return;document.getElementById("memoMeta").textContent=`${g.my} vs ${g.opp} / ${g.result==="W"?"勝ち":"負け"} / ${g.turn||"—"}`;document.getElementById("memoText").value=g.memo||"";document.getElementById("memoCause").value=g.cause||"";document.getElementById("memoModal").classList.add("show")}
 function closeMemo(){document.getElementById("memoModal").classList.remove("show");memoIndex=-1}
 document.getElementById("memoCancel").onclick=closeMemo;
-document.getElementById("memoSave").onclick=()=>{if(memoIndex<0)return;state.games[memoIndex].memo=document.getElementById("memoText").value.trim();save();render();closeMemo()};
-document.getElementById("memoDelete").onclick=()=>{if(memoIndex<0)return;if(confirm("この試合のメモを削除しますか？")){state.games[memoIndex].memo="";save();render();closeMemo()}};
+document.getElementById("memoSave").onclick=()=>{if(memoIndex<0)return;state.games[memoIndex].memo=document.getElementById("memoText").value.trim();state.games[memoIndex].cause=document.getElementById("memoCause").value;save();render();closeMemo()};
+document.getElementById("memoDelete").onclick=()=>{if(memoIndex<0)return;if(confirm("この試合のメモを削除しますか？")){state.games[memoIndex].memo="";state.games[memoIndex].cause="";save();render();closeMemo()}};
 document.getElementById("memoModal").onclick=e=>{if(e.target.id==="memoModal")closeMemo()};
 </script></body>
 </html>
