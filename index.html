@@ -1,4 +1,4 @@
-<!doctype html>
+doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
@@ -8,6 +8,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>シャドバ戦績カウンター</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
 :root{--bg:#0b1020;--card:#151d31;--card2:#1b263d;--text:#f5f7fb;--muted:#9aa7bd;--accent:#6ea8fe;--win:#35d07f;--lose:#ff5c6c;--line:#2b3852}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#0b1020,#10182b);color:var(--text);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Noto Sans JP",sans-serif}
@@ -26,6 +27,10 @@
 .memo-actions button{flex:1}
 </style><style>
 .history-toggle{width:100%;margin-top:10px;background:#25314a;color:#d9e1ef}
+</style>
+<style>
+.env-row{display:grid;grid-template-columns:1fr auto;gap:8px}.drive-status{font-size:12px;color:var(--muted);margin-top:8px}.drive-ok{color:#7ee2a8}.drive-warn{color:#ffd27d}.drive-error{color:#ff9da7}.env-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+@media(max-width:480px){.env-row{grid-template-columns:1fr}.env-actions{grid-template-columns:1fr}}
 </style></head>
 <body>
 <div class="wrap">
@@ -110,6 +115,27 @@
     <div id="deckAnalysis" style="margin-top:12px"></div>
   </div>
 
+  <h2>🗂️ 戦績環境</h2>
+  <div class="card">
+    <div class="label">今記録している環境</div>
+    <div class="env-row">
+      <select id="environmentSelect"></select>
+      <button class="secondary" id="deleteEnvironmentBtn">この環境を削除</button>
+    </div>
+    <div class="env-actions">
+      <input id="newEnvironment" placeholder="例：第2弾">
+      <button class="secondary" id="addEnvironmentBtn">環境を追加</button>
+    </div>
+    <div class="hint">環境ごとに戦績・デッキ・メモを完全に分離します。第1弾、第2弾…と増やしても混ざりません。</div>
+  </div>
+
+  <h2>☁️ Google Drive 自動バックアップ</h2>
+  <div class="card">
+    <button class="secondary" id="driveConnectBtn">Google Driveに接続</button>
+    <div id="driveStatus" class="drive-status">未接続。接続すると、このアプリで作成したバックアップを環境ごとにDriveへ保存します。</div>
+    <div class="hint">初回だけGoogleアカウントの許可が必要です。以後、戦績を保存すると現在の環境を自動バックアップします。</div>
+  </div>
+
   <h2>⚙️ デッキ設定</h2>
   <div class="card">
     <div class="grid">
@@ -125,12 +151,68 @@
 </div>
 
 <script>
-const KEY='shadowverse_wb_simple_log_v1';
-let state=JSON.parse(localStorage.getItem(KEY)||'null')||{
-  decks:['不明'], games:[]
-};
-function save(){localStorage.setItem(KEY,JSON.stringify(state));}
+const KEY='shadowverse_wb_simple_log_v3';
+const OLD_KEY='shadowverse_wb_simple_log_v1';
+const GOOGLE_CLIENT_ID='YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com';
+const DRIVE_SCOPE='https://www.googleapis.com/auth/drive.file';
+let root;
+let state;
+let driveToken='';
+let driveTokenClient=null;
+let driveBackupTimer=null;
+let driveFiles={};
+
+function blankEnv(){return {decks:['不明'],games:[]};}
+function loadRoot(){
+  try{
+    const current=JSON.parse(localStorage.getItem(KEY)||'null');
+    if(current&&current.environments){
+      driveFiles=current.driveFiles||{};
+      return current;
+    }
+  }catch(e){}
+  try{
+    const old=JSON.parse(localStorage.getItem(OLD_KEY)||'null');
+    if(old&&Array.isArray(old.games)&&Array.isArray(old.decks)){
+      const migrated={version:3,activeEnv:'第1弾',environments:{'第1弾':{decks:old.decks.length?old.decks:['不明'],games:old.games}},driveFiles:{}};
+      localStorage.setItem(KEY,JSON.stringify(migrated));
+      driveFiles={};
+      return migrated;
+    }
+  }catch(e){}
+  return {version:3,activeEnv:'第1弾',environments:{'第1弾':blankEnv()},driveFiles:{}};
+}
+root=loadRoot();
+if(!root.environments[root.activeEnv])root.environments[root.activeEnv]=blankEnv();
+state=root.environments[root.activeEnv];
+function saveLocal(){root.environments[root.activeEnv]=state;root.version=3;root.driveFiles=driveFiles;localStorage.setItem(KEY,JSON.stringify(root));}
+function save(){saveLocal();queueDriveBackup();}
 function esc(s){return s.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+function fillEnvironmentSelect(){
+  const el=document.getElementById('environmentSelect');if(!el)return;
+  const old=el.value;
+  el.innerHTML=Object.keys(root.environments).map(x=>`<option>${esc(x)}</option>`).join('');
+  el.value=root.environments[old]?old:root.activeEnv;
+}
+function switchEnvironment(name){
+  if(!root.environments[name])return;
+  root.activeEnv=name;state=root.environments[name];window._historyPage=0;saveLocal();fillEnvironmentSelect();render();
+}
+function addEnvironment(){
+  const input=document.getElementById('newEnvironment'),name=input.value.trim();
+  if(!name)return;
+  if(root.environments[name]){alert('その環境はすでにあります。');return;}
+  root.environments[name]=blankEnv();root.activeEnv=name;state=root.environments[name];input.value='';window._historyPage=0;saveLocal();fillEnvironmentSelect();render();
+}
+function deleteEnvironment(){
+  const names=Object.keys(root.environments);
+  if(names.length<=1){alert('最後の1つの環境は削除できません。');return;}
+  const name=root.activeEnv;
+  if(!confirm(`「${name}」の戦績をすべて削除します。よろしいですか？`))return;
+  delete root.environments[name];
+  root.activeEnv=Object.keys(root.environments)[0];state=root.environments[root.activeEnv];
+  window._historyPage=0;saveLocal();fillEnvironmentSelect();render();
+}
 function fillSelects(){
   const a=document.getElementById('myDeck'),b=document.getElementById('oppDeck');
   const oldA=a.value,oldB=b.value;
@@ -396,10 +478,87 @@ function render(){
     '</tbody></table>'+
     (totalPages>1?`<button class="history-toggle" onclick="changeHistoryPage(${currentPage+1<totalPages?currentPage+1:0})">${currentPage+1<totalPages?'▼ 過去の戦績を見る':'▲ 最新の戦績に戻る'}（${currentPage+1}/${totalPages}）</button>`:'');
 }
-document.getElementById('analysisDeck').addEventListener('change',()=>{renderDeckAnalysis();renderCompoundAnalysis();});window.addEventListener('resize',render);render();
+document.getElementById('analysisDeck').addEventListener('change',()=>{renderDeckAnalysis();renderCompoundAnalysis();});document.getElementById('environmentSelect').value=root.activeEnv;fillEnvironmentSelect();window.addEventListener('resize',render);render();
 
+function setDriveStatus(text,cls=''){
+  const el=document.getElementById('driveStatus');if(!el)return;
+  el.className='drive-status '+cls;el.textContent=text;
+}
+function driveReady(){return !!driveToken;}
+function initDriveClient(){
+  if(driveTokenClient||!window.google?.accounts?.oauth2)return;
+  if(GOOGLE_CLIENT_ID.startsWith('YOUR_')){setDriveStatus('Google CloudのOAuthクライアントIDをindex.htmlに設定すると利用できます。','drive-warn');return;}
+  driveTokenClient=google.accounts.oauth2.initTokenClient({
+    client_id:GOOGLE_CLIENT_ID,scope:DRIVE_SCOPE,include_granted_scopes:true,
+    callback:(resp)=>{
+      if(resp.error){setDriveStatus('Google Driveへの接続に失敗しました。','drive-error');return;}
+      driveToken=resp.access_token;
+      setDriveStatus(`接続中：${root.activeEnv} を自動バックアップします。`,'drive-ok');
+      backupCurrentEnvironmentToDrive(true);
+    }
+  });
+}
+function connectDrive(){
+  if(GOOGLE_CLIENT_ID.startsWith('YOUR_')){alert('まずGoogle CloudでOAuthクライアントIDを作成し、index.htmlのYOUR_GOOGLE_OAUTH_CLIENT_IDを置き換えてください。');return;}
+  initDriveClient();
+  if(!driveTokenClient){alert('Googleの認証ライブラリを読み込んでいます。数秒後にもう一度押してください。');return;}
+  driveTokenClient.requestAccessToken({prompt:driveToken?'':'consent'});
+}
+async function driveRequest(url,options={}){
+  const headers=new Headers(options.headers||{});headers.set('Authorization','Bearer '+driveToken);
+  const res=await fetch(url,{...options,headers});
+  if(res.status===401){driveToken='';setDriveStatus('Google Driveの認証が切れました。もう一度「Google Driveに接続」を押してください。','drive-warn');throw new Error('AUTH');}
+  if(!res.ok)throw new Error('Drive '+res.status);
+  return res;
+}
+async function findDriveFile(envName){
+  const cached=driveFiles[envName];
+  if(cached){
+    try{await driveRequest(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(cached)}?fields=id,trashed`);return cached;}catch(e){delete driveFiles[envName];}
+  }
+  const name=`shadowverse-${envName}.json`;
+  const q=`name = '${name.replace(/'/g,"\\'")}' and trashed = false`;
+  const res=await driveRequest('https://www.googleapis.com/drive/v3/files?'+new URLSearchParams({q,spaces:'drive',fields:'files(id,name)',pageSize:'10'}));
+  const data=await res.json();
+  if(data.files?.length){driveFiles[envName]=data.files[0].id;saveLocal();return data.files[0].id;}
+  return null;
+}
+function makeDrivePayload(envName){
+  return {app:'Shadowverse WB Record',version:3,environment:envName,exportedAt:new Date().toISOString(),data:root.environments[envName]};
+}
+async function uploadDriveFile(envName,fileId){
+  const payload=JSON.stringify(makeDrivePayload(envName),null,2);
+  const blob=new Blob([payload],{type:'application/json'});
+  const boundary='-------shadowverse'+Date.now();
+  const metadata={name:`shadowverse-${envName}.json`,mimeType:'application/json'};
+  if(!fileId)metadata.parents=['root'];
+  const body=new Blob([
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`,JSON.stringify(metadata),
+    `\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n`,blob,`\r\n--${boundary}--`
+  ]);
+  const url=fileId?`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=multipart`:'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+  const res=await driveRequest(url,{method:fileId?'PATCH':'POST',headers:{'Content-Type':`multipart/related; boundary=${boundary}`},body});
+  const data=await res.json();
+  if(data.id){driveFiles[envName]=data.id;saveLocal();}
+}
+async function backupCurrentEnvironmentToDrive(initial=false){
+  if(!driveReady())return;
+  const env=root.activeEnv;
+  try{
+    setDriveStatus(`☁️ ${env} をDriveへバックアップ中…`);
+    const id=await findDriveFile(env);
+    await uploadDriveFile(env,id);
+    setDriveStatus(`☁️ Driveバックアップ済み：${env}`,'drive-ok');
+  }catch(e){if(e.message!=='AUTH')setDriveStatus(`Driveバックアップ失敗：${env}`,'drive-error');}
+}
+function queueDriveBackup(){
+  if(!driveReady())return;
+  clearTimeout(driveBackupTimer);
+  driveBackupTimer=setTimeout(()=>backupCurrentEnvironmentToDrive(),1200);
+}
+window.addEventListener('load',()=>setTimeout(initDriveClient,700));
 function downloadBackup(){
-  const payload={app:"Shadowverse WB Record",version:2,exportedAt:new Date().toISOString(),data:state};
+  const payload={app:"Shadowverse WB Record",version:3,environment:root.activeEnv,exportedAt:new Date().toISOString(),data:state};
   const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob),a=document.createElement("a");
   a.href=url;a.download=`shadowverse-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();
@@ -411,16 +570,23 @@ function restoreBackup(file){
     try{
       const payload=JSON.parse(reader.result),data=payload.data||payload;
       if(!data||!Array.isArray(data.games)||!Array.isArray(data.decks))throw new Error();
-      if(!confirm(`バックアップの${data.games.length}戦を復元します。現在の戦績は置き換わります。よろしいですか？`))return;
+      const targetEnv=(payload.environment&&String(payload.environment).trim())||root.activeEnv;
+      if(!root.environments[targetEnv])root.environments[targetEnv]=blankEnv();
+      if(!confirm(`「${targetEnv}」へバックアップの${data.games.length}戦を復元します。現在の環境の戦績は置き換わります。よろしいですか？`))return;
+      root.activeEnv=targetEnv;
       state={decks:data.decks.length?data.decks:["不明"],games:data.games.map(g=>({
         date:g.date||new Date().toISOString(),my:g.my||"不明",opp:g.opp||"不明",
         turn:g.turn||"—",result:g.result==="W"?"W":"L",memo:g.memo||"",cause:g.cause||""
       }))};
-      save();render();alert("復元しました！");
+      root.environments[targetEnv]=state;saveLocal();fillEnvironmentSelect();render();alert(`「${targetEnv}」に復元しました！`);
     }catch(e){alert("バックアップファイルを読み込めませんでした。");}
   };
   reader.readAsText(file);
 }
+document.getElementById('environmentSelect').addEventListener('change',e=>switchEnvironment(e.target.value));
+document.getElementById('addEnvironmentBtn').onclick=addEnvironment;
+document.getElementById('deleteEnvironmentBtn').onclick=deleteEnvironment;
+document.getElementById('driveConnectBtn').onclick=connectDrive;
 document.getElementById("backupBtn").onclick=downloadBackup;
 document.getElementById("restoreBtn").onclick=()=>document.getElementById("restoreFile").click();
 document.getElementById("restoreFile").addEventListener("change",e=>{
